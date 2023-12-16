@@ -6,7 +6,7 @@ import { promises as fs } from "fs";
 import { createWriteStream, default as fsSync } from 'fs';
 import { join } from "path";
 import { homedir, tmpdir } from "os";
-import ora from "ora";
+import { oraPromise, default as ora } from "ora";
 import chalk from "chalk";
 import colors from "ansi-colors";
 import { formatDistanceToNow } from "date-fns";
@@ -150,9 +150,13 @@ const prompt = new enquirer.Select({
     }).run()
 
     if (confirm) {
-      await fs.rm(join(cacheDir, selected.tag_name), { recursive: true })
-      this.choices = this.choices.filter((choice) => choice.value.tag_name !== selected.tag_name)
-      this.render()
+      await oraPromise(fs.rm(join(cacheDir, selected.tag_name), { recursive: true }), {
+        text: `Deleting ${selected.tag_name}...`,
+        successText: `Deleted ${selected.tag_name}`,
+        failText: `Failed to delete ${selected.tag_name}`
+      })
+    } else {
+      console.log('😌 Okay, it can stay.')
     }
   }
 });
@@ -178,7 +182,7 @@ try {
   // If the version isn't cached, download it.
   if (!cachedVersions.includes(chosenRelease.tag_name)) {
     const asset = chosenRelease.assets.find((asset) => assetMatch.test(asset.name));
-    const downloadSpinner = ora(`Downloading ${chosenRelease.tag_name} (${(asset.size / 1024 / 1024).toPrecision(3)} MiB)`).start();
+    const downloadSpinner = ora(`Downloading ${chosenRelease.tag_name} (${(asset.size / 1024 / 1024).toPrecision(3)} MiB)...`).start();
     const url = asset.browser_download_url;
     // Create a temporary directory to download the asset to.
     // Use the system's temporary directory.
@@ -198,7 +202,7 @@ try {
     downloadSpinner.succeed(`Downloaded ${chosenRelease.tag_name}`);
 
     // Extract the downloaded archive.
-    const extractSpinner = ora("Extracting archive").start();
+    const extractSpinner = ora("Extracting archive...").start();
 
     if (process.platform === 'darwin') {
       const mountInfo = await $`hdiutil attach ${join(tmpDir, asset.name)} -mountrandom ${tmpDir} -plist`;
