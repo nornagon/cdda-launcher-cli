@@ -25,7 +25,7 @@ async function maybeFetch(url, options) {
 }
 
 function getReleases() {
-  return maybeFetch("https://api.github.com/repos/CleverRaven/Cataclysm-DDA/releases?per_page=100")
+  return maybeFetch("https://api.github.com/repos/CleverRaven/Cataclysm-DDA/releases")
     .then(r => r.json())
 }
 
@@ -76,8 +76,8 @@ async function* getCachedReleases() {
 }
 
 const stableReleases = releases.filter((release) => !release.prerelease);
+if (!stableReleases.length) throw new Error("No stable releases found");
 const latestStableRelease = stableReleases[0];
-const experimentalReleases = releases.filter((release) => release.prerelease);
 const cachedReleases = await fromAsync(getCachedReleases());
 
 function isCached(version) {
@@ -85,7 +85,7 @@ function isCached(version) {
 }
 
 const settingsFile = join(cacheDir, "settings.json");
-const settings = await fs.readJson(settingsFile, { throws: false }) || {};
+const settings = await fs.readJson(settingsFile).catch(() => ({}));
 
 const assetMatch = {
   darwin: /osx-tiles/,
@@ -94,8 +94,8 @@ const assetMatch = {
 }[process.platform]
 
 // Latest experimental release with an asset matching the current platform.
-const experimentalRelease = experimentalReleases
-  .find((release) => release.assets.some((asset) => assetMatch.test(asset.name)));
+let experimentalRelease = releases
+  .find((release) => release.prerelease && release.assets.some((asset) => assetMatch.test(asset.name)));
 
 const lastVersion = isCached(settings.lastVersion) ? settings.lastVersion : null;
 
@@ -106,8 +106,9 @@ const choices = [
     hint: isCached(latestStableRelease.tag_name) ? `(cached)` : null
   },
   {
-    name: `Latest Experimental (${experimentalRelease.tag_name})`,
-    value: experimentalRelease,
+    name: `Latest Experimental`,
+    value: null,
+    disabled: true,
     hint() {
       const relativeTime = formatDistanceToNow(new Date(experimentalRelease.published_at), { addSuffix: true })
       return fetched ? `(${relativeTime})` : "(fetching...)"
@@ -163,8 +164,14 @@ if (!fetched)
     if (prompt.state.submitted) return
     fetched = true
     releases = newReleases
+    experimentalRelease = releases
+      .find((release) => release.prerelease && release.assets.some((asset) => assetMatch.test(asset.name)));
+    const e = prompt.choices.find(c => c.name === 'Latest Experimental')
+    e.name = e.message = `Latest Experimental (${experimentalRelease.tag_name})`
+    e.value = experimentalRelease
+    e.disabled = false
     prompt.render()
-  }).catch(() => {
+  }).catch((e) => {
     if (prompt.state.submitted) return
     // fail silently
     fetched = true
@@ -224,7 +231,7 @@ async function downloadRelease(release) {
     const mountInfo = await $`hdiutil attach ${assetFile} -mountrandom ${tmpDir} -plist`;
     const mountPoint = mountInfo.stdout.match(/<key>mount-point<\/key>\s*<string>([^<]+)<\/string>/)[1];
     await fs.mkdir(join(cacheDir, release.tag_name), { recursive: true });
-    await $`cp -R ${join(mountPoint, 'Cataclysm.app')} ${join(cacheDir, release.tag_name)}`;
+    await fs.copy(join(mountPoint, 'Cataclysm.app'), join(cacheDir, release.tag_name, 'Cataclysm.app'));
     await $`hdiutil detach ${mountPoint}`;
   }
 
