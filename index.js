@@ -1,3 +1,4 @@
+// @ts-check
 // This is a launcher tool for the game Cataclysm: Dark Days Ahead.
 
 import 'zx/globals'
@@ -78,7 +79,7 @@ async function* getCachedReleases() {
 const stableReleases = releases.filter((release) => !release.prerelease);
 if (!stableReleases.length) throw new Error("No stable releases found");
 const latestStableRelease = stableReleases[0];
-const cachedReleases = await fromAsync(getCachedReleases());
+let cachedReleases = await fromAsync(getCachedReleases());
 
 function isCached(version) {
   return cachedReleases.some((release) => release.tag_name === version);
@@ -93,94 +94,103 @@ const assetMatch = {
   win32: /windows-tiles-sounds-x64/,
 }[process.platform]
 
-// Latest experimental release with an asset matching the current platform.
-let experimentalRelease = releases
-  .find((release) => release.prerelease && release.assets.some((asset) => assetMatch.test(asset.name)));
-
 const lastVersion = isCached(settings.lastVersion) ? settings.lastVersion : null;
 
-const choices = [
-  {
-    name: `Stable (${latestStableRelease.tag_name})`,
-    value: latestStableRelease,
-    hint: isCached(latestStableRelease.tag_name) ? `(cached)` : null
-  },
-  {
-    name: `Latest Experimental`,
-    value: null,
-    disabled: true,
-    hint() {
-      const relativeTime = formatDistanceToNow(new Date(experimentalRelease.published_at), { addSuffix: true })
-      return fetched ? `(${relativeTime})` : "(fetching...)"
-    }
-  },
-  ...cachedReleases
-    .sort(((a, b) => new Date(b.published_at) - new Date(a.published_at)))
-    .filter((release) => release.tag_name !== latestStableRelease.tag_name)
-    .map((release) => ({
-      name: release.tag_name,
-      value: release,
-      hint: `(cached)`
-    })),
-]
+do {
+  // Latest experimental release with an asset matching the current platform.
+  let experimentalRelease = releases
+    .find((release) => release.prerelease && release.assets.some((asset) => assetMatch.test(asset.name)));
 
-if (cachedReleases.length > 0)
-  console.log(`${colors.bold("Shift+D")} to delete a cached version.`)
+  const choices = [
+    {
+      name: `Stable (${latestStableRelease.tag_name})`,
+      value: latestStableRelease,
+      hint: isCached(latestStableRelease.tag_name) ? `(cached)` : null
+    },
+    {
+      name: fetched ? `Latest Experimental (${experimentalRelease.tag_name})` : "Latest Experimental",
+      value: fetched ? experimentalRelease : null,
+      disabled: !fetched,
+      hint() {
+        const relativeTime = formatDistanceToNow(new Date(experimentalRelease.published_at), { addSuffix: true })
+        return fetched ? `(${relativeTime})` : "(fetching...)"
+      }
+    },
+    ...cachedReleases
+      .sort(((a, b) => new Date(b.published_at) - new Date(a.published_at)))
+      .filter((release) => release.tag_name !== latestStableRelease.tag_name)
+      .map((release) => ({
+        name: release.tag_name,
+        value: release,
+        hint: `(cached)`
+      })),
+  ]
 
-const prompt = new enquirer.Select({
-  name: "version",
-  message: "Which version would you like to play?",
-  choices,
-  initial: lastVersion,
-  actions: {
-    shift: {
-      d: 'delete',
+  if (cachedReleases.length > 0)
+    console.log(`${colors.bold("Shift+D")} to delete a cached version.`)
+
+  const prompt = new enquirer.Select({
+    name: "version",
+    message: "Which version would you like to play?",
+    choices,
+    initial: lastVersion,
+    actions: {
+      shift: {
+        d: 'delete',
+      }
+    },
+    async delete() {
+      this.emit('delete')
+      await this.submit()
     }
-  },
-  async delete() {
-    const selected = this.choices[this.index].value
-    await this.cancel()
+  });
+
+  if (!fetched) {
+    updateReleases().then((newReleases) => {
+      if (prompt.state.submitted) return
+      fetched = true
+      releases = newReleases
+      experimentalRelease = releases
+        .find((release) => release.prerelease && release.assets.some((asset) => assetMatch.test(asset.name)));
+      const e = prompt.choices.find(c => c.name === 'Latest Experimental')
+      e.name = e.message = `Latest Experimental (${experimentalRelease.tag_name})`
+      e.value = experimentalRelease
+      e.disabled = false
+      prompt.render()
+    }).catch((e) => {
+      if (prompt.state.submitted) return
+      // fail silently
+      fetched = true
+      prompt.render()
+    })
+  }
+
+  let shouldDelete = false
+  prompt.on('delete', async () => {
+    shouldDelete = true;
+  })
+  await prompt.run();
+  const chosenRelease = prompt.choices[prompt.index].value
+  if (shouldDelete) {
     // Delete the cached version. Confirm first.
     const confirm = await new enquirer.Confirm({
       name: "confirm",
-      message: `Delete ${selected.tag_name}?`,
+      message: `Delete ${chosenRelease.tag_name}?`,
       initial: false,
     }).run()
 
     if (confirm) {
-      await oraPromise(fs.rm(join(cacheDir, selected.tag_name), { recursive: true }), {
-        text: `Deleting ${selected.tag_name}...`,
-        successText: `Deleted ${selected.tag_name}`,
-        failText: `Failed to delete ${selected.tag_name}`
+      await oraPromise(fs.rm(join(cacheDir, chosenRelease.tag_name), { recursive: true }), {
+        text: `Deleting ${chosenRelease.tag_name}...`,
+        successText: `Deleted ${chosenRelease.tag_name}`,
+        failText: `Failed to delete ${chosenRelease.tag_name}`
       })
+      cachedReleases = cachedReleases.filter((release) => release.tag_name !== chosenRelease.tag_name)
     } else {
       console.log('😌 Okay, it can stay.')
     }
+    continue;
   }
-});
-
-if (!fetched)
-  updateReleases().then((newReleases) => {
-    if (prompt.state.submitted) return
-    fetched = true
-    releases = newReleases
-    experimentalRelease = releases
-      .find((release) => release.prerelease && release.assets.some((asset) => assetMatch.test(asset.name)));
-    const e = prompt.choices.find(c => c.name === 'Latest Experimental')
-    e.name = e.message = `Latest Experimental (${experimentalRelease.tag_name})`
-    e.value = experimentalRelease
-    e.disabled = false
-    prompt.render()
-  }).catch((e) => {
-    if (prompt.state.submitted) return
-    // fail silently
-    fetched = true
-    prompt.render()
-  })
-
-try {
-  await prompt.run();
-  const chosenRelease = prompt.choices[prompt.index].value
 
   // If the version isn't cached, download it.
   if (!isCached(chosenRelease.tag_name))
@@ -195,9 +205,9 @@ try {
   if (process.platform === 'darwin') {
     await $`open ${join(gameDir, 'Cataclysm.app')} --args ${process.argv.slice(2)}`
     launchSpinner.stopAndPersist({ symbol: '🧟‍♂️', text: 'Launched!' })
+    break;
   }
-} catch {
-}
+} while (true)
 
 async function downloadAsset(tmpDir, asset) {
   const url = asset.browser_download_url;
