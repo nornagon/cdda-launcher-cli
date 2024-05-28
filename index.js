@@ -193,7 +193,7 @@ try {
 
   const launchSpinner = ora("Launching...").start();
   if (process.platform === 'darwin') {
-    await $`open ${join(gameDir, 'Cataclysm.app')}`
+    await $`open ${join(gameDir, 'Cataclysm.app')} --args ${process.argv.slice(2)}`
     launchSpinner.stopAndPersist({ symbol: '🧟‍♂️', text: 'Launched!' })
   }
 } catch {
